@@ -16,6 +16,7 @@ import datetime
 import asyncio
 
 db_conn = None
+db_pool = None
 
 now = datetime.datetime.utcnow()
 
