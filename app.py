@@ -28,6 +28,10 @@ with open('./dataModelNeuronal/scaler.pkl', 'rb') as f:
 # Cargar modelo
 modelo = load_model("./dataModelNeuronal/modelo_mantenimiento.keras")
 
+@app.get("/")
+def home():
+    return {"mensaje": "API corriendo en Render 🎉"}
+
 @app.post("/predecir")
 def predecir(data: InputData):
     # Convertir entrada a DataFrame
