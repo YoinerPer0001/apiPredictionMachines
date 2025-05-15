@@ -13,6 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import uuid
 import datetime
+import asyncio
 
 db_conn = None
 
@@ -60,55 +61,68 @@ def home():
 
 @app.on_event("startup")
 async def listen_pg_notify():
-    global db_conn
-    db_conn = await asyncpg.connect(dsn=DATABASE_URL)
-    await db_conn.add_listener("nueva_lectura", handle_notification)
+    global db_pool
+    db_pool = await asyncpg.create_pool(dsn=DATABASE_URL)
+    conn = await db_pool.acquire()
+    await conn.add_listener("nueva_lectura", handle_notification)
     print("🟢 Escuchando canal 'nueva_lectura'...")
 
 async def handle_notification(conn, pid, channel, payload):
-    
-    lectura_id = uuid.UUID(payload)  # Convertir string a UUID
-    row = await conn.fetchrow("SELECT * FROM lecturas \n"
-                              "INNER JOIN sensores ON lecturas.sensor_id = sensores.id \n"
-                              "INNER JOIN nodos ON sensores.nodo_id = nodos.id \n"
-                              "INNER JOIN maquinas ON nodos.maquina_id = maquinas.id \n"
-                              "WHERE lecturas.id = $1", lectura_id)
-    data = InputData(
-        valor=row['valor'],      
-        sensor=row['tipo'],       
-        maquina=row['modelo'] 
-    )
-    print(row)
-    prediccion = predecir(data)
-    
-    print(prediccion)
-    if(prediccion["prediccion"] == 1):
-        #normal -- no crear alerta -- si existe alerte eliminarla
-        response = await conn.execute("UPDATE lecturas SET etiqueta = $1 WHERE lecturas.id = $2;", prediccion["etiqueta"],lectura_id )
-        exist =await  conn.fetchrow("Select * from alertas WHERE alertas.sensor_id = $1", row["sensor_id"])
-        if(exist):
-            deleted = await conn.execute("DELETE FROM alertas WHERE alertas.sensor_id = $1;", row["sensor_id"])
-            print("se elimino de alertas")
+    # Procesa en segundo plano para no bloquear el listener
+    asyncio.create_task(procesar_lectura(payload))
+
+async def procesar_lectura(payload):
+    lectura_id = uuid.UUID(payload)
+    now = datetime.utcnow()
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT * FROM lecturas
+            INNER JOIN sensores ON lecturas.sensor_id = sensores.id
+            INNER JOIN nodos ON sensores.nodo_id = nodos.id
+            INNER JOIN maquinas ON nodos.maquina_id = maquinas.id
+            WHERE lecturas.id = $1
+        """, lectura_id)
+
+        if not row:
+            print(f"Lectura con ID {lectura_id} no encontrada.")
+            return
+
+        data = InputData(
+            valor=row['valor'],
+            sensor=row['tipo'],
+            maquina=row['modelo']
+        )
+
+        prediccion = predecir(data)
+
+        # Actualiza la etiqueta
+        await conn.execute(
+            "UPDATE lecturas SET etiqueta = $1 WHERE id = $2;",
+            prediccion["etiqueta"], lectura_id
+        )
+
+        if prediccion["prediccion"] == 1:
+            # Normal: eliminar alerta si existe
+            exist = await conn.fetchrow("SELECT * FROM alertas WHERE sensor_id = $1", row["sensor_id"])
+            if exist:
+                await conn.execute("DELETE FROM alertas WHERE sensor_id = $1", row["sensor_id"])
+                print(" Alerta eliminada")
+            else:
+                print("No existe alerta para eliminar")
         else:
-            print("no existe en alertas")
-            
-        print(f"updated lectura : {response}")
-    else :
-        #mantenimiento -- crear alerta -- si existe alerte omitir
-        response = await conn.execute("UPDATE lecturas SET etiqueta = $1 WHERE lecturas.id = $2;", prediccion["etiqueta"],lectura_id )
-        exist = await conn.fetchrow("Select * from alertas WHERE alertas.sensor_id = $1", row["sensor_id"])
-        if(exist):
-            print("alerta ya se encuentra registrada")
-        else:
-            create = await conn.execute("""
-                                            INSERT INTO alertas ("id", "sensor_id", "descripcion", "nivel", "createdAt", "updatedAt")
-                                            VALUES ($1, $2, $3, $4, $5, $6)
-                                        """, uuid.uuid4(), row["sensor_id"], "Revisar equipo mantenimiento", "media", now, now)
-            print("no existe en alertas se creo")
-            
-        print(f"updated lectura mantenuimieto {response}")
-         
-    print(f"Nueva lectura con ID: {payload}")
+            # Mantenimiento: crear alerta si no existe
+            exist = await conn.fetchrow("SELECT * FROM alertas WHERE sensor_id = $1", row["sensor_id"])
+            if not exist:
+                await conn.execute("""
+                    INSERT INTO alertas (id, sensor_id, descripcion, nivel, createdAt, updatedAt)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                """, uuid.uuid4(), row["sensor_id"], "Revisar equipo mantenimiento", "media", now, now)
+                print(" Alerta creada")
+            else:
+                print("Alerta ya existe")
+
+        print(f"Procesada lectura: {lectura_id}")
     
 @app.get("/lecturas")
 def leer_lecturas(db: Session = Depends(get_db)):
