@@ -113,7 +113,7 @@ def procesar_lecturas(db: Session = Depends(get_db)):
                 VALUES (:id, :descripcion, :nivel, :createdAt, :updatedAt, :sensor_id)
             '''), {
                 "id": str(uuid4()),
-                "descripcion": "Valor medido: " + lectura.valor +" "+ lectura.unidad,
+                "descripcion": "Valor medido: " + str(lectura.valor) +" "+ lectura.unidad,
                 "nivel": "media",
                 "createdAt": datetime.utcnow(),
                 "updatedAt": datetime.utcnow(),
