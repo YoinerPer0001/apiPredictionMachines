@@ -78,6 +78,7 @@ def procesar_lecturas(db: Session = Depends(get_db)):
                 lecturas.id AS lectura_id,
                 sensores.id AS sensor_id,
                 sensores.tipo AS tipo_sensor,
+                sensores.unidad AS unidad,
                 nodos.id AS nodo_id,
                 maquinas.id AS maquina_id,
                 maquinas.modelo AS modelo,
@@ -112,7 +113,7 @@ def procesar_lecturas(db: Session = Depends(get_db)):
                 VALUES (:id, :descripcion, :nivel, :createdAt, :updatedAt, :sensor_id)
             '''), {
                 "id": str(uuid4()),
-                "descripcion": "Revisar Equipo",
+                "descripcion": "Valor medido: " + lectura.valor +" "+ lectura.unidad,
                 "nivel": "media",
                 "createdAt": datetime.utcnow(),
                 "updatedAt": datetime.utcnow(),
